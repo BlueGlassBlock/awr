@@ -17,6 +17,8 @@ pub enum Element {
     At(At),
     #[doc(hidden)]
     Face(Face),
+    #[doc(hidden)]
+    Dice(Dice),
 }
 
 impl PushElem for Element {
@@ -24,6 +26,7 @@ impl PushElem for Element {
         match elem {
             Element::At(at) => PushElem::push_to(elem::At::from(at), vec),
             Element::Face(face) => PushElem::push_to(elem::Face::from(face), vec),
+            Element::Dice(dice) => PushElem::push_to(elem::Dice::from(dice), vec)
         }
     }
 }
@@ -189,5 +192,34 @@ impl Face {
 impl From<Face> for elem::Face {
     fn from(face: Face) -> Self {
         face.elem
+    }
+}
+
+///骰子。
+#[pyclass]
+#[derive(Clone)]
+pub struct Dice {
+    #[pyo3(get)]
+    value: i32,
+}
+
+#[pymethods]
+impl Dice {
+    /// 构造新的骰子元素。
+    /// 
+    /// # Python
+    /// ```python
+    /// @overload
+    /// def __init__(self, value: int) -> None: ...
+    /// ```
+    #[new]
+    fn new(value: i32) -> PyResult<Self> {
+        return Ok(Self { value });
+    }
+}
+
+impl From<Dice> for elem::Dice {
+    fn from(value: Dice) -> Self {
+        elem::Dice::new(value.value)
     }
 }
