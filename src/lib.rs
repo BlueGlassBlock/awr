@@ -38,6 +38,7 @@ pub mod login;
 mod loguru;
 pub mod message;
 mod utils;
+mod events;
 
 const LOGO: &str = r#"
  █████╗ ██╗    ██╗██████╗ 
@@ -79,10 +80,7 @@ pub fn awr(py: Python, m: &PyModule) -> PyResult<()> {
     // 登录方式
     m.add_class::<login::LoginMethod>()?;
     m.add_class::<login::Password>()?;
-    #[cfg(feature = "qrcode")]
-    {
-        m.add_class::<login::QrCode>()?;
-    }
+    m.add_class::<login::QrCode>()?;
     m.add_class::<login::Dynamic>()?;
     // 客户端
     m.add_class::<client::Client>()?;
@@ -91,5 +89,6 @@ pub fn awr(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<message::elements::Face>()?;
     // 消息内容
     m.add_class::<message::content::MessageContent>()?;
+    m.add_class::<events::helper::EventBase>()?;
     Ok(())
 }

@@ -39,7 +39,13 @@ where
 #[doc(hidden)]
 macro_rules! py_dict {
     ($py:expr, $($name:expr => $value:expr),*) => {
-        [$(($name, $value),)*].into_py_dict($py)
+        {
+            let dict = PyDict::new($py);
+            $(
+                dict.set_item($name, $value).expect("Failed to set_item on dict");
+            )*
+            dict
+        }
     };
 }
 

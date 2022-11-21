@@ -54,8 +54,6 @@ use tokio::task::JoinHandle;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
 use crate::utils::{py_future, retry};
-
-#[cfg(feature = "qrcode")]
 pub use self::qrcode_login::*;
 
 /// 登录方式。
@@ -296,7 +294,6 @@ impl Dynamic {
 
                         password_login(&client, uin, password, false).await?;
                     }
-                    #[cfg(feature = "qrcode")]
                     1 => {
                         // 二维码登录
                         qrcode_login(&client, uin).await?;
@@ -521,7 +518,6 @@ pub(crate) async fn reconnect(
     .await
 }
 
-#[cfg(feature = "qrcode")]
 mod qrcode_login {
     use super::*;
     use bytes::Bytes;

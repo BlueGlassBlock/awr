@@ -42,16 +42,13 @@ rand = "0.8.5"
 rand_chacha = "0.3.1"
 either = "1.8.0"
 requestty = "0.5.0"
-rqrr = { version = "0.5", optional = true }
-qrcode = { version = "0.12", optional = true }
-image = { version = "0.24", optional = true }
+rqrr = "0.5"
+qrcode = "0.12"
+image = "0.24"
+async-trait = "0.1.58"
 
 [build-dependencies]
 built = { version = "0.5", features = ["chrono"] }
-
-[features]
-qrcode = ["dep:rqrr", "dep:qrcode", "dep:image"]
-default = ["qrcode"]
 
 [package.metadata.maturin]
 python-source = "python"

@@ -65,6 +65,7 @@ name = "awr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "built",
  "bytes",
  "either",
