@@ -89,5 +89,8 @@ pub fn awr(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<message::elements::Face>()?;
     // 消息内容
     m.add_class::<message::content::MessageContent>()?;
+
+    // Events
+    m.add_class::<events::GroupMessage>()?;
     Ok(())
 }

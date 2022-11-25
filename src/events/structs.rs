@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use ricq::client::event::EventWithClient;
-
+use ricq::msg::elem::RQElem;
 use ricq::structs as s;
 use ricq_core::command::profile_service as ps;
 use ricq_core::jce as js;
@@ -8,6 +8,7 @@ macro_rules! py_event {
     ($name: ident => $inner: ty) => {
         #[pyclass]
         #[allow(dead_code)]
+        #[derive(Debug)]
         pub struct $name {
             e: $inner,
         }
@@ -17,16 +18,23 @@ macro_rules! py_event {
                 Self { e: value.inner }
             }
         }
+
+        #[pymethods]
+        impl $name {
+            pub fn __repr__(&self) -> String {
+                format!("<awr.{} {:?}>", stringify!($name), self.e)
+            }
+        }
     };
 }
 
 #[pyclass]
-pub struct LoginSuccess {
+pub struct Login {
     #[pyo3(get)]
     uin: i64,
 }
 
-impl From<i64> for LoginSuccess {
+impl From<i64> for Login {
     fn from(value: i64) -> Self {
         Self { uin: value }
     }
@@ -59,5 +67,23 @@ impl GroupMessage {
     #[getter]
     pub fn sender(&self) -> i64 {
         self.e.from_uin
+    }
+    #[getter]
+    pub fn group_code(&self) -> i64 {
+        self.e.group_code
+    }
+    #[getter]
+    pub fn content(&self) -> String {
+        let mut res: Vec<String> = vec![];
+        let elem = self.e.elements.clone();
+
+        for e in elem {
+            match e {
+                RQElem::At(a) => res.push(a.display),
+                RQElem::Text(t) => res.push(t.to_string()),
+                _ => (),
+            }
+        }
+        res.join("")
     }
 }

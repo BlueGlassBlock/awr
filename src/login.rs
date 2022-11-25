@@ -45,7 +45,6 @@ use ricq::{
         common::after_login,
         reconnect::{fast_login, Credential},
     },
-    handler::DefaultHandler,
     version::get_version,
     Client, Device, LoginDeviceLocked, LoginNeedCaptcha, LoginResponse, LoginSuccess,
     LoginUnknownStatus, Protocol,
@@ -53,6 +52,7 @@ use ricq::{
 use tokio::task::JoinHandle;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
+use crate::events::PyHandler;
 use crate::utils::{py_future, retry};
 pub use self::qrcode_login::*;
 
@@ -341,10 +341,11 @@ async fn prepare_client(
     device: Device,
     protocol: Protocol,
 ) -> Result<(Arc<Client>, JoinHandle<()>)> {
+    let handler = PyHandler::new()?;
     let client = Arc::new(Client::new(
         device,
         get_version(protocol),
-        DefaultHandler, // TODO: 处理事件
+        handler,
     ));
     let alive = tokio::spawn({
         let client = client.clone();

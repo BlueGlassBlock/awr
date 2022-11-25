@@ -31,14 +31,4 @@ _awr.init(_awr)
 __version__ = _awr.__version__
 __build__ = _awr.__build__
 
-from .awr import At, Client, Dynamic, Face, MessageContent, Password, QrCode
-
-__all__ = [
-    "Client",
-    "Password",
-    "QrCode",
-    "Dynamic",
-    "At",
-    "Face",
-    "MessageContent",
-]
+from .awr import *

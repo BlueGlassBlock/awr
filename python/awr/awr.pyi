@@ -326,3 +326,11 @@ class MessageContent:
     @staticmethod
     async def build_friend_message(*segments: str | Element) -> MessageContent:
         """构造好友消息链。"""
+
+
+
+class GroupMessage:
+    @property
+    def sender(self) -> int: ...
+    @property
+    def content(self) -> str: ...
