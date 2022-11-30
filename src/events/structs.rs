@@ -28,6 +28,20 @@ macro_rules! py_event {
     };
 }
 
+macro_rules! event_props {
+    ($self_t: ident @ $cls: ident : $($name: ident => [$type: ty] $res: stmt);* ;) => {
+        #[pymethods]
+        impl $cls {
+            $(
+                #[getter]
+                pub fn $name(&$self_t) -> $type {
+                    $res
+                }
+            )*
+        }
+    };
+}
+
 #[pyclass]
 pub struct Login {
     #[pyo3(get)]
@@ -40,38 +54,23 @@ impl From<i64> for Login {
     }
 }
 
+// Group
+
 py_event!(GroupMessage => s::GroupMessage);
-py_event!(GroupAudioMessage => s::GroupAudioMessage);
-py_event!(FriendMessage => s::FriendMessage);
-py_event!(FriendAudioMessage => s::FriendAudioMessage);
-py_event!(GroupTempMessage => s::GroupTempMessage);
-py_event!(GroupRequest => ps::JoinGroupRequest);
-py_event!(SelfInvited => ps::SelfInvited);
-py_event!(NewFriendRequest => ps::NewFriendRequest);
-py_event!(NewMember => s::NewMember);
-py_event!(GroupMute => s::GroupMute);
-py_event!(FriendMessageRecall => s::FriendMessageRecall);
-py_event!(GroupMessageRecall => s::GroupMessageRecall);
-py_event!(NewFriend => s::FriendInfo);
-py_event!(GroupLeave => s::GroupLeave);
-py_event!(GroupDisband => s::GroupDisband);
-py_event!(FriendPoke => s::FriendPoke);
-py_event!(GroupNameUpdate => s::GroupNameUpdate);
-py_event!(DeleteFriend => s::DeleteFriend);
-py_event!(MemberPermissionChange => s::MemberPermissionChange);
-py_event!(KickedOffline => js::RequestPushForceOffline);
-py_event!(MSFOffline => js::RequestMSFForceOffline);
+
+event_props!(
+    self @ GroupMessage:
+    sender => [i64] self.e.from_uin;
+    group_code => [i64] self.e.group_code.clone();
+    group_name => [String] self.e.group_name.clone();
+    group_card => [String] self.e.group_card.clone();
+);
+
+
 
 #[pymethods]
 impl GroupMessage {
-    #[getter]
-    pub fn sender(&self) -> i64 {
-        self.e.from_uin
-    }
-    #[getter]
-    pub fn group_code(&self) -> i64 {
-        self.e.group_code
-    }
+
     #[getter]
     pub fn content(&self) -> String {
         let mut res: Vec<String> = vec![];
@@ -87,3 +86,48 @@ impl GroupMessage {
         res.join("")
     }
 }
+
+py_event!(GroupAudioMessage => s::GroupAudioMessage);
+
+event_props!(
+    self @ GroupAudioMessage:
+    sender => [i64] self.e.from_uin;
+    group_code => [i64] self.e.group_code.clone();
+    group_name => [String] self.e.group_name.clone();
+    group_card => [String] self.e.group_card.clone();
+);
+
+
+py_event!(GroupMessageRecall => s::GroupMessageRecall);
+
+event_props!(
+    self @ GroupMessageRecall:
+    sender => [i64] self.e.author_uin;
+    operator => [i64] self.e.operator_uin;
+    group_code => [i64] self.e.group_code;
+);
+
+py_event!(GroupRequest => ps::JoinGroupRequest);
+py_event!(SelfInvited => ps::SelfInvited);
+py_event!(NewMember => s::NewMember);
+py_event!(GroupNameUpdate => s::GroupNameUpdate);
+py_event!(GroupMute => s::GroupMute);
+py_event!(GroupLeave => s::GroupLeave);
+py_event!(GroupDisband => s::GroupDisband);
+py_event!(MemberPermissionChange => s::MemberPermissionChange);
+
+// Friend
+
+py_event!(FriendMessage => s::FriendMessage);
+py_event!(FriendAudioMessage => s::FriendAudioMessage);
+py_event!(FriendPoke => s::FriendPoke);
+py_event!(FriendMessageRecall => s::FriendMessageRecall);
+py_event!(NewFriendRequest => ps::NewFriendRequest);
+py_event!(NewFriend => s::FriendInfo);
+py_event!(DeleteFriend => s::DeleteFriend);
+
+py_event!(GroupTempMessage => s::GroupTempMessage);
+
+py_event!(KickedOffline => js::RequestPushForceOffline);
+py_event!(MSFOffline => js::RequestMSFForceOffline);
+
