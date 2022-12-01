@@ -1,44 +1,14 @@
-//! 账号登录。
-//!
-//! 首先构造 [`LoginMethod`] 的子类实例，然后调用其 [`login`] 方法进行登录。
-//!
-//! [`login`] 方法接受 QQ 号和配置文件目录两个参数，返回 [`Client`] 实例。登录完成后，账户的必要信息将会保存在
-//! `配置文件目录/QQ号/` 文件夹下，以便下次登录时使用。
-//!
-//! 部分登录方式可以指定使用的协议。可用的协议包括：
-//!
-//! | 协议 | 说明 |
-//! | --- | --- |
-//! | `ipad` | iPad 协议 |
-//! | `android` | Android 手机协议 |
-//! | `watch` | Android 手表协议 |
-//! | `macos` | MacOS 客户端协议 |
-//! | `qidian` | 企点协议 |
-//!
-//! 更多信息参考 [`Password`]、[`QrCode`]、[`Dynamic`]。
-//!
-//! # Examples
-//! ```python
-//! ## 密码登录
-//! client = awr.Password("awwwwwwwwr").login(12345678, "./bots")
-//! ## 扫码登录（手表协议）
-//! client = awr.QrCode().login(12345678, "./bots")
-//! ## 动态选择登录方式
-//! client = awr.Dynamic().login(12345678, "./bots")
-//! ```
-//!
-//! [`login`]: LoginMethod::login
-//! [`Client`]: crate::client::Client
-
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use pyo3::prelude::*;
-
+use crate::events::PyHandler;
+use crate::utils::{py_future, retry};
 use anyhow::{anyhow, bail, Result};
+use bytes::Bytes;
 use futures_util::StreamExt;
+use pyo3::{exceptions::PyValueError, prelude::*};
 use ricq::{
     client::{Connector, DefaultConnector, NetworkStatus, Token},
     ext::{
@@ -49,266 +19,12 @@ use ricq::{
     Client, Device, LoginDeviceLocked, LoginNeedCaptcha, LoginResponse, LoginSuccess,
     LoginUnknownStatus, Protocol,
 };
+use ricq::{QRCodeConfirmed, QRCodeImageFetch, QRCodeState};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use tokio_util::codec::{FramedRead, LinesCodec};
-
-use crate::events::PyHandler;
-use crate::utils::{py_future, retry};
-pub use self::qrcode_login::*;
-
-/// 登录方式。
-#[pyclass(subclass)]
-pub struct LoginMethod {
-    protocol: Protocol,
-}
-
-#[pymethods]
-impl LoginMethod {
-    /// 构造登录方式。
-    ///
-    /// # Arguments
-    /// - `protocol` - 客户端协议。
-    #[new]
-    #[args(protocol = "\"ipad\".to_string()")]
-    fn new(mut protocol: String) -> PyResult<Self> {
-        protocol.make_ascii_lowercase();
-        let protocol = match protocol.as_str() {
-            "ipad" => Protocol::IPad,
-            "android" | "android_phone" => Protocol::AndroidPhone,
-            "watch" | "android_watch" => Protocol::AndroidWatch,
-            "mac" | "macos" => Protocol::MacOS,
-            "qidian" => Protocol::QiDian,
-            _ => Err(anyhow!("不支持的协议"))?,
-        };
-        Ok(Self { protocol })
-    }
-
-    /// 登录到指定的账号。
-    ///
-    /// # Arguments
-    /// - `uin` - 用户的 QQ 号。
-    /// - `data_folder` - 数据目录。
-    ///
-    /// # Python
-    /// ```python
-    /// async def login(self, uin: int, data_folder: str) -> Client: ...
-    /// ```
-    pub fn login<'py>(&self, uin: i64, data_folder: PathBuf) -> PyResult<&'py PyAny> {
-        let _ = (uin, data_folder);
-        Err(anyhow!("未实现"))?
-    }
-}
-
-/// 密码登录。
-#[pyclass(extends=LoginMethod)]
-pub struct Password {
-    password: String,
-    md5: bool,
-}
-
-#[pymethods]
-impl Password {
-    /// 构造密码登录方式。
-    ///
-    /// # Arguments
-    /// - `password` - 密码。
-    /// - `protocol` - 客户端协议。
-    /// - `md5` - 是否用密码的 MD5 代替密码。
-    ///
-    /// # Python
-    /// ```python
-    /// def __init__(self, password: str, protocol: str = "ipad", md5: bool = False) -> None: ...
-    /// ```
-    #[new]
-    #[args(protocol = "\"ipad\".to_string()", md5 = "false")]
-    pub fn new(
-        password: String,
-        protocol: String,
-        md5: bool,
-    ) -> PyResult<PyClassInitializer<Self>> {
-        Ok(PyClassInitializer::from(LoginMethod::new(protocol)?)
-            .add_subclass(Self { password, md5 }))
-    }
-
-    /// 登录到指定的账号。
-    ///
-    /// # Arguments
-    /// - `uin` - 用户的 QQ 号。
-    /// - `data_folder` - 数据目录。
-    ///
-    /// # Python
-    /// ```python
-    /// async def login(self, uin: int, data_folder: str) -> Client: ...
-    /// ```
-    pub fn login<'py>(
-        self_: PyRef<'py, Self>,
-        py: Python<'py>,
-        uin: i64,
-        mut data_folder: PathBuf,
-    ) -> PyResult<&'py PyAny> {
-        let protocol = self_.as_ref().protocol.clone();
-        let password = self_.password.clone();
-        let md5 = self_.md5;
-        py_future(py, async move {
-            data_folder.push(uin.to_string());
-            tokio::fs::create_dir_all(&data_folder).await?;
-
-            let device = load_device_json(uin, data_folder.clone()).await?;
-            let (client, alive) = prepare_client(device, protocol).await?;
-
-            if !try_token_login(&client, data_folder.clone()).await? {
-                password_login(&client, uin, password, md5).await?;
-            }
-
-            // 注册客户端，启动心跳。
-            after_login(&client).await;
-            save_token(&client, data_folder.clone()).await?;
-            Ok(crate::client::Client::new(client, alive, data_folder).await)
-        })
-    }
-}
-
-/// 运行时选择登录方式。
-///
-/// 运行时将在**终端**中由用户选择登录方式。
-#[pyclass(extends=LoginMethod)]
-pub struct Dynamic {
-    protocol_override: bool,
-}
-
-#[pymethods]
-impl Dynamic {
-    /// 构造动态登录方式。
-    ///
-    /// # Arguments
-    /// - `protocol` - 客户端协议（可选）。
-    ///
-    /// # Python
-    /// ```python
-    /// def __init__(self, protocol: str | None = None) -> None: ...
-    /// ```
-    #[new]
-    #[args(protocol = "None")]
-    pub fn new(protocol: Option<String>) -> PyResult<PyClassInitializer<Self>> {
-        Ok(if let Some(protocol) = protocol {
-            PyClassInitializer::from(LoginMethod::new(protocol)?).add_subclass(Self {
-                protocol_override: false,
-            })
-        } else {
-            PyClassInitializer::from(LoginMethod::new("ipad".to_string())?).add_subclass(Self {
-                protocol_override: true,
-            })
-        })
-    }
-
-    /// 登录到指定的账号。
-    ///
-    /// # Arguments
-    /// - `uin` - 用户的 QQ 号。
-    /// - `data_folder` - 数据目录。
-    ///
-    /// # Python
-    /// ```python
-    /// async def login(self, uin: int, data_folder: str) -> Client: ...
-    /// ```
-    pub fn login<'py>(
-        self_: PyRef<'py, Self>,
-        py: Python<'py>,
-        uin: i64,
-        mut data_folder: PathBuf,
-    ) -> PyResult<&'py PyAny> {
-        use requestty::Question;
-        let protocol_override = self_.protocol_override;
-        let protocol = self_.as_ref().protocol.clone();
-
-        py_future(py, async move {
-            data_folder.push(uin.to_string());
-            tokio::fs::create_dir_all(&data_folder).await?;
-
-            // 询问登录方式
-            let login_method = {
-                let login_method = Question::select("login_method")
-                    .message(format!("请选择账号 {uin} 的登录方式："))
-                    .choice("密码登录");
-                let login_method = if cfg!(feature = "qrcode") {
-                    login_method.choice("二维码登录")
-                } else {
-                    login_method
-                };
-                let login_method = login_method.build();
-                requestty::prompt_one(login_method)
-                    .map_err(anyhow::Error::new)?
-                    .as_list_item()
-                    .unwrap()
-                    .index
-            };
-
-            // 询问协议
-            let protocol = if login_method != 1 {
-                if protocol_override {
-                    let protocol = Question::select("protocol")
-                        .message("请选择客户端协议：")
-                        .choice("IPad")
-                        .choice("Android Phone")
-                        .choice("Android Watch")
-                        .choice("MacOS")
-                        .choice("企点")
-                        .default(0)
-                        .build();
-                    let protocol = requestty::prompt_one(protocol)
-                        .map_err(anyhow::Error::new)?
-                        .as_list_item()
-                        .unwrap()
-                        .index;
-                    match protocol {
-                        0 => Protocol::IPad,
-                        1 => Protocol::AndroidPhone,
-                        2 => Protocol::AndroidWatch,
-                        3 => Protocol::MacOS,
-                        4 => Protocol::QiDian,
-                        _ => unreachable!(),
-                    }
-                } else {
-                    protocol
-                }
-            } else {
-                // 二维码仅支持手表协议
-                Protocol::AndroidWatch
-            };
-
-            let device = load_device_json(uin, data_folder.clone()).await?;
-            let (client, alive) = prepare_client(device, protocol.clone()).await?;
-
-            if !try_token_login(&client, data_folder.clone()).await? {
-                match login_method {
-                    0 => {
-                        // 密码登录
-                        let password = {
-                            let password = Question::password("password")
-                                .message("请输入密码：")
-                                .build();
-                            let password =
-                                requestty::prompt_one(password).map_err(anyhow::Error::new)?;
-                            password.as_string().unwrap().to_string()
-                        };
-
-                        password_login(&client, uin, password, false).await?;
-                    }
-                    1 => {
-                        // 二维码登录
-                        qrcode_login(&client, uin).await?;
-                    }
-                    _ => Err(anyhow!("尚未实现的登录方式"))?,
-                }
-            }
-
-            // 注册客户端，启动心跳。
-            after_login(&client).await;
-            save_token(&client, data_folder.clone()).await?;
-            Ok(crate::client::Client::new(client, alive, data_folder).await)
-        })
-    }
-}
 
 /// 加载 `device.json`。
 async fn load_device_json(uin: i64, mut data_folder: PathBuf) -> Result<Device> {
@@ -342,11 +58,7 @@ async fn prepare_client(
     protocol: Protocol,
 ) -> Result<(Arc<Client>, JoinHandle<()>)> {
     let handler = PyHandler::new()?;
-    let client = Arc::new(Client::new(
-        device,
-        get_version(protocol),
-        handler,
-    ));
+    let client = Arc::new(Client::new(device, get_version(protocol), handler));
     let alive = tokio::spawn({
         let client = client.clone();
         // 连接最快的服务器
@@ -358,7 +70,6 @@ async fn prepare_client(
     Ok((client, alive))
 }
 
-/// 尝试使用 token 登录。
 async fn try_token_login(client: &Client, mut data_folder: PathBuf) -> Result<bool> {
     let token_path = {
         data_folder.push("token.json");
@@ -389,7 +100,6 @@ async fn try_token_login(client: &Client, mut data_folder: PathBuf) -> Result<bo
     }
 }
 
-/// 保存 Token，用于断线重连。
 async fn save_token(client: &Client, mut data_folder: PathBuf) -> Result<()> {
     let token = client.gen_token().await;
     let token = serde_json::to_string(&token)?;
@@ -401,8 +111,7 @@ async fn save_token(client: &Client, mut data_folder: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// 密码登录。
-async fn password_login(client: &Client, uin: i64, password: String, md5: bool) -> Result<()> {
+async fn password_login(client: &Client, uin: i64, password: String, md5: bool, sms: bool) -> Result<()> {
     tracing::info!("使用密码登录，uin={}", uin);
 
     let mut resp = if !md5 {
@@ -422,16 +131,19 @@ async fn password_login(client: &Client, uin: i64, password: String, md5: bool) 
                 break;
             }
             LoginResponse::DeviceLocked(LoginDeviceLocked {
-                // ref sms_phone,
                 ref verify_url,
                 ref message,
                 ..
             }) => {
+                if sms {
+                    // resp = client.request_sms().await.expect("无法请求短信验证码");
+                    bail!("暂不支持短信登录")
+                }
+                else{
                 tracing::info!("设备锁: {}", message.as_deref().unwrap_or(""));
                 tracing::info!("验证 url: {}", verify_url.as_deref().unwrap_or(""));
                 bail!("手机打开 url，处理完成后重启程序")
-                //也可以走短信验证
-                // resp = client.request_sms().await.expect("failed to request sms");
+                }
             }
             LoginResponse::NeedCaptcha(LoginNeedCaptcha { ref verify_url, .. }) => {
                 tracing::info!("滑块 url: {}", verify_url.as_deref().unwrap_or("")); // TODO: 接入 TxCaptchaHelper
@@ -458,7 +170,6 @@ async fn password_login(client: &Client, uin: i64, password: String, md5: bool) 
     Ok(())
 }
 
-/// 断线重连。
 pub(crate) async fn reconnect(
     client: &Arc<Client>,
     data_folder: &Path,
@@ -519,154 +230,169 @@ pub(crate) async fn reconnect(
     .await
 }
 
-mod qrcode_login {
-    use super::*;
-    use bytes::Bytes;
-    use ricq::{QRCodeConfirmed, QRCodeImageFetch, QRCodeState};
-    use std::time::Duration;
-    use tokio::time::sleep;
-
-    /// 在控制台打印二维码。    
-    pub(super) fn print_qrcode(qrcode: &Bytes) -> Result<String> {
-        let qrcode = image::load_from_memory(qrcode)?.to_luma8();
-        let mut qrcode = rqrr::PreparedImage::prepare(qrcode);
-        let grids = qrcode.detect_grids();
-        if grids.len() != 1 {
-            return Err(anyhow!("无法识别二维码"));
-        }
-        let (_, content) = grids[0].decode()?;
-        let qrcode = qrcode::QrCode::new(content)?;
-        let qrcode = qrcode.render::<qrcode::render::unicode::Dense1x2>().build();
-        Ok(qrcode)
+pub(super) fn print_qrcode(qrcode: &Bytes) -> Result<String> {
+    let qrcode = image::load_from_memory(qrcode)?.to_luma8();
+    let mut qrcode = rqrr::PreparedImage::prepare(qrcode);
+    let grids = qrcode.detect_grids();
+    if grids.len() != 1 {
+        return Err(anyhow!("无法识别二维码"));
     }
+    let (_, content) = grids[0].decode()?;
+    let qrcode = qrcode::QrCode::new(content)?;
+    let qrcode = qrcode.render::<qrcode::render::unicode::Dense1x2>().build();
+    Ok(qrcode)
+}
 
-    /// 二维码登录（仅支持手表协议）。
-    #[pyclass(extends=LoginMethod)]
-    pub struct QrCode {}
+pub(super) async fn qrcode_login(client: &Client, uin: i64) -> Result<()> {
+    tracing::info!("使用二维码登录，uin={}", uin);
 
-    #[pymethods]
-    impl QrCode {
-        /// 构造二维码登录方式。
-        ///
-        /// # Arguments
-        /// - `protocol` - 客户端协议。
-        ///
-        /// # Python
-        /// ```python
-        /// def __init__(self) -> None: ...
-        /// ```
-        #[new]
-        pub fn new() -> PyResult<PyClassInitializer<Self>> {
-            Ok(
-                PyClassInitializer::from(LoginMethod::new("watch".to_string())?)
-                    .add_subclass(Self {}),
-            )
-        }
+    let mut resp = client.fetch_qrcode().await?;
 
-        /// 登录到指定的账号。
-        ///
-        /// # Arguments
-        /// - `uin` - 用户的 QQ 号。
-        /// - `data_folder` - 数据目录。
-        ///
-        /// # Python
-        /// ```python
-        /// async def login(self, uin: int, data_folder: str) -> Client: ...
-        /// ```
-        pub fn login<'py>(
-            self_: PyRef<'py, Self>,
-            py: Python<'py>,
-            uin: i64,
-            mut data_folder: PathBuf,
-        ) -> PyResult<&'py PyAny> {
-            let protocol = self_.as_ref().protocol.clone();
-            py_future(py, async move {
-                data_folder.push(uin.to_string());
-                tokio::fs::create_dir_all(&data_folder).await?;
-
-                let device = load_device_json(uin, data_folder.clone()).await?;
-                let (client, alive) = prepare_client(device, protocol).await?;
-
-                if !try_token_login(&client, data_folder.clone()).await? {
-                    qrcode_login(&client, uin).await?;
-                }
-
-                // 注册客户端，启动心跳。
-                after_login(&client).await;
-                save_token(&client, data_folder.clone()).await?;
-                Ok(crate::client::Client::new(client, alive, data_folder).await)
-            })
-        }
-    }
-
-    /// 二维码登录。    
-    pub(super) async fn qrcode_login(client: &Client, uin: i64) -> Result<()> {
-        tracing::info!("使用二维码登录，uin={}", uin);
-
-        let mut resp = client.fetch_qrcode().await?;
-
-        let mut image_sig = Bytes::new();
-        loop {
-            match resp {
-                QRCodeState::ImageFetch(QRCodeImageFetch {
+    let mut image_sig = Bytes::new();
+    loop {
+        match resp {
+            QRCodeState::ImageFetch(QRCodeImageFetch {
+                ref image_data,
+                ref sig,
+            }) => {
+                let qr = print_qrcode(image_data)?;
+                tracing::info!("请扫描二维码: \n{}", qr);
+                image_sig = sig.clone();
+            }
+            QRCodeState::WaitingForScan => {
+                tracing::debug!("等待二维码扫描")
+            }
+            QRCodeState::WaitingForConfirm => {
+                tracing::debug!("二维码已扫描，等待确认")
+            }
+            QRCodeState::Timeout => {
+                tracing::info!("二维码已超时，重新获取");
+                if let QRCodeState::ImageFetch(QRCodeImageFetch {
                     ref image_data,
                     ref sig,
-                }) => {
+                }) = client.fetch_qrcode().await.expect("failed to fetch qrcode")
+                {
                     let qr = print_qrcode(image_data)?;
                     tracing::info!("请扫描二维码: \n{}", qr);
                     image_sig = sig.clone();
                 }
-                QRCodeState::WaitingForScan => {
-                    tracing::debug!("等待二维码扫描")
-                }
-                QRCodeState::WaitingForConfirm => {
-                    tracing::debug!("二维码已扫描，等待确认")
-                }
-                QRCodeState::Timeout => {
-                    tracing::info!("二维码已超时，重新获取");
-                    if let QRCodeState::ImageFetch(QRCodeImageFetch {
-                        ref image_data,
-                        ref sig,
-                    }) = client.fetch_qrcode().await.expect("failed to fetch qrcode")
-                    {
-                        let qr = print_qrcode(image_data)?;
-                        tracing::info!("请扫描二维码: \n{}", qr);
-                        image_sig = sig.clone();
-                    }
-                }
-                QRCodeState::Confirmed(QRCodeConfirmed {
-                    ref tmp_pwd,
-                    ref tmp_no_pic_sig,
-                    ref tgt_qr,
-                    ..
-                }) => {
-                    tracing::info!("二维码已确认");
-                    let mut login_resp =
-                        client.qrcode_login(tmp_pwd, tmp_no_pic_sig, tgt_qr).await?;
-                    if let LoginResponse::DeviceLockLogin { .. } = login_resp {
-                        login_resp = client.device_lock_login().await?;
-                    }
-                    if let LoginResponse::Success(LoginSuccess {
-                        ref account_info, ..
-                    }) = login_resp
-                    {
-                        tracing::info!("登录成功: {:?}", account_info);
-                        let real_uin = client.uin().await;
-                        if real_uin != uin {
-                            tracing::warn!("预期登录账号 {}，但实际登陆账号为 {}", uin, real_uin);
-                        }
-                        break;
-                    }
-                    bail!("登录失败，原因未知：{:?}", login_resp)
-                }
-                QRCodeState::Canceled => {
-                    bail!("二维码已取消")
-                }
             }
-            sleep(Duration::from_secs(5)).await;
-            resp = client.query_qrcode_result(&image_sig).await?;
+            QRCodeState::Confirmed(QRCodeConfirmed {
+                ref tmp_pwd,
+                ref tmp_no_pic_sig,
+                ref tgt_qr,
+                ..
+            }) => {
+                tracing::info!("二维码已确认");
+                let mut login_resp = client.qrcode_login(tmp_pwd, tmp_no_pic_sig, tgt_qr).await?;
+                if let LoginResponse::DeviceLockLogin { .. } = login_resp {
+                    login_resp = client.device_lock_login().await?;
+                }
+                if let LoginResponse::Success(LoginSuccess {
+                    ref account_info, ..
+                }) = login_resp
+                {
+                    tracing::info!("登录成功: {:?}", account_info);
+                    let real_uin = client.uin().await;
+                    if real_uin != uin {
+                        tracing::warn!("预期登录账号 {}，但实际登陆账号为 {}", uin, real_uin);
+                    }
+                    break;
+                }
+                bail!("登录失败，原因未知：{:?}", login_resp)
+            }
+            QRCodeState::Canceled => {
+                bail!("二维码已取消")
+            }
         }
+        sleep(Duration::from_secs(5)).await;
+        resp = client.query_qrcode_result(&image_sig).await?;
+    }
 
-        Ok(())
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum LoginMethods {
+    Password(Password),
+    QRCode,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Password {
+    password: String,
+    md5: bool,
+    sms: bool,
+}
+
+#[pyclass]
+pub struct Account {
+    protocol: Protocol,
+    uin: i64,
+    data_folder: PathBuf,
+}
+
+#[pymethods]
+impl Account {
+    #[new]
+    #[args(protocol = "\"ipad\".to_string()")]
+    fn new(uin: i64, data_folder: PathBuf, mut protocol: String) -> PyResult<Self> {
+        protocol.make_ascii_lowercase();
+        let protocol = match protocol.as_str() {
+            "ipad" => Protocol::IPad,
+            "android" | "android_phone" => Protocol::AndroidPhone,
+            "watch" | "android_watch" => Protocol::AndroidWatch,
+            "mac" | "macos" => Protocol::MacOS,
+            "qidian" => Protocol::QiDian,
+            _ => Err(anyhow!("不支持的协议"))?,
+        };
+        Ok(Self {
+            protocol,
+            uin,
+            data_folder,
+        })
+    }
+
+    pub fn login<'py>(
+        self_t: PyRef<'py, Self>,
+        py: Python<'py>,
+        method: String,
+    ) -> PyResult<&'py PyAny> {
+        match serde_json::from_str::<LoginMethods>(&method) {
+            Ok(method) => {
+                let protocol = self_t.protocol.clone();
+                let mut data_folder = self_t.data_folder.clone();
+                let uin = self_t.uin;
+                py_future(py, async move {            
+                    data_folder.push(uin.to_string());
+                    tokio::fs::create_dir_all(&data_folder).await?;
+            
+                    let device = load_device_json(uin, data_folder.clone()).await?;
+                    let (client, alive) = prepare_client(device, protocol).await?;
+            
+                    match method {
+                        LoginMethods::Password(p) => {
+                            if !try_token_login(&client, data_folder.clone()).await? {
+                                password_login(&client, uin, p.password, p.md5, p.sms).await?;
+                            }
+                        },
+                        LoginMethods::QRCode => {
+                            if !try_token_login(&client, data_folder.clone()).await? {
+                                qrcode_login(&client, uin).await?;
+                            }
+                        },
+                    }
+            
+                    // 注册客户端，启动心跳。
+                    after_login(&client).await;
+                    save_token(&client, data_folder.clone()).await?;
+                    Ok(crate::client::Client::new(client, alive, data_folder).await)
+                })
+            }
+            Err(e) => {
+                return Err(PyValueError::new_err(format!("{:?}", e)));
+            }
+        }
     }
 }
