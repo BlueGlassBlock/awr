@@ -62,7 +62,7 @@ impl Handler for PyHandler {
             let py_event = convert(e, py);
             let args = PyTuple::new(py, &[py_event]);
             // Using sync function here so that users can be *more careful* when interacting with callbacks.
-            self.callback.call1(py, args).unwrap_or(py.None());
+            self.callback.call1(py, args).unwrap_or_else(|_| py.None());
         })
     }
 }

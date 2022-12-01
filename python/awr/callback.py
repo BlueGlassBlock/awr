@@ -1,4 +1,3 @@
-from .awr import GroupMessage
 from loguru import logger
 
 

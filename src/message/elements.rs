@@ -214,7 +214,7 @@ impl Dice {
     /// ```
     #[new]
     fn new(value: i32) -> PyResult<Self> {
-        return Ok(Self { value });
+        Ok(Self { value })
     }
 }
 
